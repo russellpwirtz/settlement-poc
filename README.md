@@ -97,20 +97,14 @@ curl -X POST "http://localhost:8000/orders/confirm" \
          }'
 ```
 
-### Liquidity Matching 
-- FastAPI publishes `order_placed` event to Kafka
-- Liquidity Engine reads `order_placed` from Kafka
-- Executes liquidity swap with merchant
-- When completed, publishes `trade_executed` event to Kafka
-
 ### Liquidity Engine
 - FastAPI publishes `order_placed` event to Kafka
 - Liquidity Engine reads `order_placed` from Kafka
 - Executes liquidity swap with merchant
-- When completed, publishes `trade_executed` event to Kafka
+- When completed, publishes `order_confirmed` event to Kafka
 
 ### Ledger Updates
-- Event store ingests `order_placed` and `trade_executed` events
+- Event store ingests events such as: `order_placed`, `liquidity_failed`, `liquidity_confirmed`, `liquidity_confirmation_failed`, `order_confirmed`
 - Update snapshots of user balances (currently in-memory snapshots, could be postgres in production)
 
 ### User Notification
