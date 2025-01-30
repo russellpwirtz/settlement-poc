@@ -9,7 +9,15 @@ WalletEventType = Literal[
     "withdrawal_requested",
     "withdrawal_completed",
     "balance_hold",
-    "balance_released"
+    "balance_released",
+    "order_funds_reserved",
+    "order_funds_released",
+    "order_funds_transferred",
+    "funds_reservation_confirmed",
+    "funds_reservation_failed",
+    "funds_released",
+    "funds_transfer_completed",
+    "funds_release_failed"
 ]
 
 class WalletEvent(BaseModel):

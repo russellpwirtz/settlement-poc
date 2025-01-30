@@ -52,17 +52,3 @@ class OrderEvent(BaseModel):
             "price": self.execution_price,
             "side": self.side
         }
-
-    @classmethod
-    def create_from_command(cls, command: 'PlaceOrderCommand'):
-        return cls(
-            event_type="order_placed",
-            transaction_id=command.transaction_id,
-            user_id=command.user_id,
-            symbol=command.symbol,
-            side=command.side,
-            quantity=Decimal(str(command.quantity)),
-            remaining_quantity=Decimal(str(command.quantity)),
-            price=Decimal(str(command.price)) if command.price else None,
-            status="open"
-        )

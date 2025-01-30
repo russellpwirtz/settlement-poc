@@ -1,6 +1,6 @@
 from shared.events.wallet_event import WalletEvent
 from shared.event_store import PostgresEventStore
-from shared.commands import DepositFundsCommand, WithdrawFundsCommand, DepositConfirmationCommand
+from shared.commands import DepositFundsCommand, WithdrawFundsCommand, DepositConfirmationCommand, ReserveFundsCommand, ReleaseFundsCommand
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from shared.streaming import consume_messages, get_consumer
 import asyncio
@@ -22,13 +22,18 @@ class WalletManager:
     def __init__(self):
         logger.warning("WalletManager initializing...")
         self.consumer = AIOKafkaConsumer(
-            "commands",
+            "wallet_commands",
             bootstrap_servers='localhost:9092',
             group_id="wallet-manager-group"
         )
         self.producer = AIOKafkaProducer(bootstrap_servers='localhost:9092')
         self.event_store = None
         self.balance_snapshot = BalanceSnapshot()
+        self.wallet_command_consumer = AIOKafkaConsumer(
+            "wallet_commands",
+            bootstrap_servers='localhost:9092',
+            group_id="wallet-manager-group"
+        )
         logger.warning("WalletManager initialized")
 
     async def start(self):
@@ -40,25 +45,7 @@ class WalletManager:
             async for msg in consume_messages(self.consumer):
                 try:
                     msg_dict = json.loads(msg)
-                    command = None
-                    logger.debug("Received json from Kafka topic: " + str(msg_dict))
-                    if msg_dict["command_type"] == "deposit_funds":
-                        command = DepositFundsCommand.parse_obj(msg_dict)
-                        logger.debug("Received deposit funds command")
-                        await self.handle_deposit(command)
-                        logger.info("Deposit funds command processed successfully")
-                    elif msg_dict["command_type"] == "withdraw_funds":
-                        command = WithdrawFundsCommand.parse_obj(msg_dict)
-                        logger.debug("Received withdraw funds command")
-                        await self.handle_withdrawal(command)
-                        logger.info("Withdrawal funds command processed successfully")
-                    elif msg_dict["command_type"] == "deposit_confirmation":
-                        command = DepositConfirmationCommand.parse_obj(msg_dict)
-                        logger.debug("Received deposit confirmation command")
-                        await self.handle_deposit_confirmation(command)
-                        logger.info("Deposit confirmation command processed successfully")
-                    else:
-                        logger.warning("Unknown command type received")
+                    await self.process_message(msg_dict)
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")
         except Exception as e:
@@ -66,6 +53,35 @@ class WalletManager:
         finally:
             await self.producer.close()
             await self.consumer.close()
+
+    async def process_message(self, msg_dict: dict):
+        if msg_dict["command_type"] == "deposit_funds":
+            command = DepositFundsCommand.parse_obj(msg_dict)
+            logger.debug("Received deposit funds command")
+            await self.handle_deposit(command)
+            logger.info("Deposit funds command processed successfully")
+        elif msg_dict["command_type"] == "withdraw_funds":
+            command = WithdrawFundsCommand.parse_obj(msg_dict)
+            logger.debug("Received withdraw funds command")
+            await self.handle_withdrawal(command)
+            logger.info("Withdrawal funds command processed successfully")
+        elif msg_dict["command_type"] == "deposit_confirmation":
+            command = DepositConfirmationCommand.parse_obj(msg_dict)
+            logger.debug("Received deposit confirmation command")
+            await self.handle_deposit_confirmation(command)
+            logger.info("Deposit confirmation command processed successfully")
+        elif msg_dict["command_type"] == "reserve_funds":
+            command = ReserveFundsCommand.parse_obj(msg_dict)
+            logger.debug("Received reserve funds command")
+            await self.handle_reserve_funds(command)
+            logger.info("Reserve funds command processed successfully")
+        elif msg_dict["command_type"] == "release_funds":
+            command = ReleaseFundsCommand.parse_obj(msg_dict)
+            logger.debug("Received release funds command")
+            await self.handle_release_funds(command)
+            logger.info("Release funds command processed successfully")
+        else:
+            logger.warning(f"Unknown command type received: {msg_dict['command_type']}")
 
     async def handle_deposit(self, command: DepositFundsCommand) -> None:
         """Process a deposit command and create corresponding events"""
@@ -171,8 +187,195 @@ class WalletManager:
     async def _init_event_store(self):
         self.event_store = PostgresEventStore(await asyncpg.connect(os.getenv("DB_CONNECT_STRING")))
 
+    async def reserve_order_funds(self, user_id: str, base_currency: str, quote_currency: str, base_amount: float, quote_amount: float) -> None:
+        """Reserve funds for an order"""
+        # Check available balance
+        current_balance = await self._get_user_balance(user_id, quote_currency)
+        if current_balance <= 0 or current_balance < quote_amount:
+            logger.warning(f"Insufficient funds for order {user_id} {quote_currency} Amount: {quote_amount} Current Balance: {current_balance}")
+            raise ValueError("Insufficient funds for order")
+        else:
+            logger.warning(f"Sufficient funds for order {user_id} {quote_currency} Amount: {quote_amount} Current Balance: {current_balance}")
+
+        logger.warning(f"Reserving {quote_amount} {quote_currency} for user {user_id}")
+        # Create reservation events
+        reserve_event = WalletEvent(
+            event_type="order_funds_reserved",
+            user_id=user_id,
+            currency=quote_currency,
+            amount=-quote_amount,  # Deduct from available balance
+            transaction_id=str(uuid.uuid4())
+        )
+        
+        logger.warning(f"Reserving {base_amount} {base_currency} for user {user_id}")
+        pending_event = WalletEvent(
+            event_type="order_funds_reserved",
+            user_id=user_id,
+            currency=base_currency,
+            amount=base_amount,  # Add to pending balance
+            transaction_id=reserve_event.transaction_id
+        )
+        
+        # Save events
+        logger.warning(f"Saving reserve event for user {user_id}")
+        await self.event_store.save_event(user_id, reserve_event.dict())
+        logger.warning(f"Saving pending event for user {user_id}")
+        await self.event_store.save_event(user_id, pending_event.dict())
+        
+        # Update snapshots
+        logger.warning(f"Updating balance for user {user_id}")
+        await self.balance_snapshot.update_balance(user_id, quote_currency, -quote_amount)
+        logger.warning(f"Updating pending deposit for user {user_id}")
+        await self.balance_snapshot.update_pending_deposit(user_id, base_currency, base_amount)
+
+    async def release_order_funds(self, user_id: str, base_currency: str, quote_currency: str, base_amount: float, quote_amount: float) -> None:
+        """Release reserved funds if order fails"""
+        logger.warning(f"Releasing {quote_amount} {quote_currency} for user {user_id}")
+        release_event = WalletEvent(
+            event_type="order_funds_released",
+            user_id=user_id,
+            currency=quote_currency,
+            amount=quote_amount,  # Return to available balance
+            transaction_id=str(uuid.uuid4())
+        )
+        
+        logger.warning(f"Saving release event for user {user_id}")
+        pending_event = WalletEvent(
+            event_type="order_funds_released",
+            user_id=user_id,
+            currency=base_currency,
+            amount=-base_amount,  # Remove from pending balance
+            transaction_id=release_event.transaction_id
+        )
+        
+        logger.warning(f"Saving pending event for user {user_id}")
+        await self.event_store.save_event(user_id, release_event.dict())
+        await self.event_store.save_event(user_id, pending_event.dict())
+        
+        # Update snapshots
+        logger.warning(f"Updating balance for user {user_id}")
+        await self.balance_snapshot.update_balance(user_id, quote_currency, quote_amount)
+        logger.warning(f"Clearing pending deposit for user {user_id}")
+        await self.balance_snapshot.clear_pending_deposit(user_id, base_currency, base_amount)
+
+    async def complete_order_transfer(self, user_id: str, base_currency: str, quote_currency: str, base_amount: float, quote_amount: float) -> None:
+        """Complete the order transfer after confirmation"""
+        logger.warning(f"Completing order transfer for user {user_id}")
+        transfer_event = WalletEvent(
+            event_type="order_funds_transferred",
+            user_id=user_id,
+            currency=base_currency,
+            amount=base_amount,  # Add to confirmed balance
+            transaction_id=str(uuid.uuid4())
+        )
+        
+        logger.warning(f"Saving transfer event for user {user_id}")
+        await self.event_store.save_event(user_id, transfer_event.dict())
+        
+        # Update snapshots
+        logger.warning(f"Clearing pending deposit for user {user_id}")
+        await self.balance_snapshot.clear_pending_deposit(user_id, base_currency, base_amount)
+        logger.warning(f"Updating balance for user {user_id}")
+        await self.balance_snapshot.update_balance(user_id, base_currency, base_amount)
+
+    async def handle_reserve_funds(self, command: ReserveFundsCommand):
+        """Handle reserve funds command"""
+        try:
+            logger.warning(f"Reserving funds for user {command.user_id} for {command.order_side} order")
+            
+            if command.order_side == "buy":
+                # For buy orders, we need to reserve quote currency
+                await self.reserve_order_funds(
+                    user_id=command.user_id,
+                    base_currency=command.base_currency,
+                    quote_currency=command.quote_currency,
+                    base_amount=0,  # Not needed for buy orders
+                    quote_amount=command.quote_amount
+                )
+            elif command.order_side == "sell":
+                # For sell orders, we need to reserve base currency
+                await self.reserve_order_funds(
+                    user_id=command.user_id,
+                    base_currency=command.base_currency,
+                    quote_currency=command.quote_currency,
+                    base_amount=command.base_amount,
+                    quote_amount=0  # Not needed for sell orders
+                )
+            
+            # Send confirmation event
+            logger.warning(f"Sending confirmation event for user {command.user_id}")
+            confirmation_event = WalletEvent(
+                event_type="funds_reservation_confirmed",
+                user_id=command.user_id,
+                currency=command.quote_currency,
+                amount=command.quote_amount,
+                transaction_id=command.order_transaction_id
+            )
+            logger.warning(f"Saving confirmation event for user {command.user_id}")
+            await self.event_store.save_event(command.user_id, confirmation_event.dict())
+            logger.warning(f"Sending confirmation event for user {command.user_id}")
+            await self.producer.send("wallet_events", confirmation_event.json().encode())
+            
+        except Exception as e:
+            logger.warning(f"Error reserving funds for user {command.user_id}")
+            error_event = WalletEvent(
+                event_type="funds_reservation_failed",
+                user_id=command.user_id,
+                currency=command.quote_currency,
+                amount=command.quote_amount,
+                transaction_id=command.order_transaction_id,
+                error_message=str(e)
+            )
+            logger.warning(f"Saving error event for user {command.user_id}")
+            await self.event_store.save_event(command.user_id, error_event.dict())
+            logger.warning(f"Sending error event for user {command.user_id}")
+            await self.producer.send("wallet_events", error_event.json().encode())
+            raise
+
+    async def handle_release_funds(self, command: ReleaseFundsCommand):
+        """Handle release funds command"""
+        try:
+            logger.warning(f"Releasing funds for user {command.user_id}")
+            await self.release_order_funds(
+                user_id=command.user_id,
+                base_currency=command.base_currency,
+                quote_currency=command.quote_currency,
+                base_amount=command.base_amount,
+                quote_amount=command.quote_amount
+            )
+            
+            # Send confirmation event
+            logger.warning(f"Sending confirmation event for user {command.user_id}")
+            confirmation_event = WalletEvent(
+                event_type="funds_release_confirmed",
+                user_id=command.user_id,
+                currency=command.quote_currency,
+                amount=command.quote_amount,
+                transaction_id=command.order_transaction_id
+            )
+            logger.warning(f"Saving confirmation event for user {command.user_id}")
+            await self.event_store.save_event(command.user_id, confirmation_event.dict())
+            logger.warning(f"Sending confirmation event for user {command.user_id}")
+            await self.producer.send("wallet_events", confirmation_event.json().encode())
+            
+        except Exception as e:
+            logger.warning(f"Error releasing funds for user {command.user_id}")
+            error_event = WalletEvent(
+                event_type="funds_release_failed",
+                user_id=command.user_id,
+                currency=command.quote_currency,
+                amount=command.quote_amount,
+                transaction_id=command.order_transaction_id,
+                error_message=str(e)
+            )
+            logger.warning(f"Saving error event for user {command.user_id}")
+            await self.event_store.save_event(command.user_id, error_event.dict())
+            logger.warning(f"Sending error event for user {command.user_id}")
+            await self.producer.send("wallet_events", error_event.json().encode())
+            raise
+
 async def main():
-    logger.error("WalletManager starting...")
+    logger.warning("WalletManager starting...")
     wallet_manager = WalletManager()
     await wallet_manager._init_event_store()
     await wallet_manager.rebuild_state()

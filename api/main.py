@@ -26,7 +26,7 @@ async def get_balance(user_id: str):
 @app.post("/wallet/deposit")
 async def deposit_funds(command: DepositFundsCommand, producer: AIOKafkaProducer = Depends(get_producer)):
     try:
-        await producer.send("commands", command.json())
+        await producer.send("wallet_commands", command.json())
         return {"status": "Deposit command accepted"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -34,7 +34,7 @@ async def deposit_funds(command: DepositFundsCommand, producer: AIOKafkaProducer
 @app.post("/wallet/withdraw")
 async def withdraw_funds(command: WithdrawFundsCommand, producer: AIOKafkaProducer = Depends(get_producer)):
     try:
-        await producer.send("commands", command.json())
+        await producer.send("wallet_commands", command.json())
         return {"status": "Withdrawal command accepted"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -42,7 +42,7 @@ async def withdraw_funds(command: WithdrawFundsCommand, producer: AIOKafkaProduc
 @app.post("/wallet/deposit/confirm")
 async def confirm_deposit(command: DepositConfirmationCommand, producer: AIOKafkaProducer = Depends(get_producer)):
     try:
-        await producer.send("commands", command.json())
+        await producer.send("wallet_commands", command.json())
         return {"status": "Deposit confirmation accepted"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

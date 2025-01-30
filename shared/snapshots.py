@@ -60,32 +60,48 @@ class BalanceSnapshot:
             self._pending_balances.clear()
             for event in [this_event['data'] for this_event in events]:
                 if event == {}:
-                    logger.info(f"Skipping empty event")
                     continue
-                logger.debug(f"Processing event of type {event['event_type']}")
-                if event['event_type'] in ('deposit_confirmed', 'withdrawal_completed'):
-                    user_id = event['user_id']
-                    currency = event['currency']
-                    amount = event['amount']
-                    if event['event_type'] == 'withdrawal_completed':
-                        amount = -amount
+                
+                user_id = event['user_id']
+                currency = event['currency']
+                amount = event['amount']
+                
+                if event['event_type'] == 'order_funds_reserved':
+                    if amount < 0:  # Quote currency deduction
+                        self._confirmed_balances[user_id][currency] += amount
+                    else:  # Base currency pending
+                        self._pending_balances[user_id][currency] += amount
+                    
+                elif event['event_type'] == 'order_funds_released':
+                    if amount > 0:  # Quote currency return
+                        self._confirmed_balances[user_id][currency] += amount
+                    else:  # Base currency pending removal
+                        self._pending_balances[user_id][currency] += amount
+                    
+                elif event['event_type'] == 'order_funds_transferred':
+                    self._confirmed_balances[user_id][currency] += amount
+                    self._pending_balances[user_id][currency] -= amount
+                    
+                elif event['event_type'] == 'deposit_confirmed':
+                    if amount > 0:
+                        self._confirmed_balances[user_id][currency] += amount
+                    else:
+                        self._pending_balances[user_id][currency] += amount
+                elif event['event_type'] == 'withdrawal_completed':
+                    amount = -amount
                     # Add to confirmed balance
                     self._confirmed_balances[user_id][currency] += amount
                     logger.debug(f"Updated confirmed balance for {user_id}: {amount} {currency}")
                     
                     # Remove from pending if this is a confirmation
-                    if event['event_type'] == 'deposit_confirmed':
-                        if self._pending_balances[user_id][currency] >= amount:
-                            self._pending_balances[user_id][currency] -= amount
-                            if self._pending_balances[user_id][currency] <= 0:
-                                del self._pending_balances[user_id][currency]
-                            logger.debug(f"Cleared pending deposit for {user_id} after confirmation")
-                        else:
-                            logger.warning(f"Pending deposit underflow for {user_id}: {currency}")
+                    if self._pending_balances[user_id][currency] >= amount:
+                        self._pending_balances[user_id][currency] -= amount
+                        if self._pending_balances[user_id][currency] <= 0:
+                            del self._pending_balances[user_id][currency]
+                        logger.debug(f"Cleared pending deposit for {user_id} after confirmation")
+                    else:
+                        logger.warning(f"Pending deposit underflow for {user_id}: {currency}")
                 elif event['event_type'] == 'deposit_initiated':
-                    user_id = event['user_id']
-                    currency = event['currency']
-                    amount = event['amount']
                     self._pending_balances[user_id][currency] += amount
                     logger.debug(f"Added pending deposit for {user_id}: {amount} {currency}")
             
@@ -106,7 +122,7 @@ class BalanceSnapshot:
                         }
                 if combined:
                     logger.info(f"Final balance for user {user_id}: {json.dumps(combined)}")
-                logger.info("Completed rebuilding balances from events")
+            logger.info("Completed rebuilding balances from events")
 
     async def get_all_balances(self, user_id: str) -> Dict[str, float]:
         """Return both confirmed and pending balances"""

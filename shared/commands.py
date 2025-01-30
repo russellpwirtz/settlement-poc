@@ -17,7 +17,7 @@ class PlaceOrderCommand(BaseCommand):
     side: OrderSide
     price: Optional[float]  # Required for limit orders
     quantity: float
-    order_type: OrderType
+    order_type: str = "market"  # Add default value
     transaction_id: str = str(uuid.uuid4())
 
 class OrderConfirmationCommand(BaseCommand):
@@ -46,3 +46,29 @@ class WithdrawFundsCommand(BaseCommand):
     amount: float
     destination_address: str
     transaction_id: str = str(uuid.uuid4())
+
+class ReserveFundsCommand(BaseCommand):
+    command_type: Literal["reserve_funds"] = "reserve_funds"
+    user_id: str
+    base_currency: str
+    quote_currency: str
+    base_amount: float
+    quote_amount: float
+    order_transaction_id: str
+    order_side: str
+
+class ReleaseFundsCommand(BaseCommand):
+    command_type: Literal["release_funds"] = "release_funds"
+    base_currency: str
+    quote_currency: str
+    base_amount: float
+    quote_amount: float
+    order_transaction_id: str
+
+class CompleteFundsTransferCommand(BaseCommand):
+    command_type: Literal["complete_funds_transfer"] = "complete_funds_transfer"
+    base_currency: str
+    quote_currency: str
+    base_amount: float
+    quote_amount: float
+    order_transaction_id: str
