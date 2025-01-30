@@ -45,6 +45,11 @@ uvicorn api.main:app --reload --port 8000
 python -m wallet.manager
 ```
 
+3. Liquidity Engine:
+```bash
+python -m engine.liquidity_engine
+```
+
 ## Example Usage
 
 ### Deposit Funds
@@ -97,11 +102,46 @@ curl -X POST "http://localhost:8000/orders/confirm" \
          }'
 ```
 
+### Wallet Manager
+- **FastAPI Endpoints**:
+  - `POST /wallet/deposit`: Accepts `DepositFundsCommand` to initiate deposits
+  - `POST /wallet/deposit/confirm`: Accepts `DepositConfirmationCommand` to confirm deposits
+  - `POST /wallet/withdraw`: Accepts `WithdrawFundsCommand` to initiate withdrawals
+  - `GET /wallet/{user_id}`: Retrieves current balance (currently returns placeholder data)
+- **Kafka Integration**:
+  - Consumes `deposit_funds`, `deposit_confirmation`, and `withdraw_funds` commands
+  - Produces wallet events to event store
+- **Event Sourcing**:
+  - Maintains wallet state through `deposit_initiated`, `deposit_confirmed`, `withdrawal_requested` events
+  - Stores events in PostgreSQL with transaction history
+- **Core Operations**:
+  - Deposit initiation and confirmation
+  - Withdrawal processing
+  - Balance snapshot maintenance
+  - Transaction verification
+- **Error Handling**:
+  - Validates sufficient funds for withdrawals
+  - Prevents duplicate transaction confirmations
+  - Maintains transaction consistency through event sourcing
+
 ### Liquidity Engine
-- FastAPI publishes `order_placed` event to Kafka
-- Liquidity Engine reads `order_placed` from Kafka
-- Executes liquidity swap with merchant
-- When completed, publishes `order_confirmed` event to Kafka
+- **FastAPI Endpoints**:
+  - `POST /orders`: Accepts `PlaceOrderCommand` to initiate new orders
+  - `POST /orders/confirm`: Accepts `OrderConfirmationCommand` to confirm order execution
+- **Kafka Integration**:
+  - Consumes `place_order` and `order_confirmation` commands
+  - Produces order events to event store
+- **Event Sourcing**:
+  - Maintains order state through `order_placed`, `liquidity_confirmed`, and `liquidity_failed` events
+  - Stores events in PostgreSQL with transaction history
+- **Core Operations**:
+  - Token transfers to exchange (blockchain integration)
+  - Merchant swap initiation
+  - Order confirmation handling
+  - Error recovery through event replay
+- **Error Handling**:
+  - Creates `liquidity_failed` and `liquidity_confirmation_failed` events for error cases
+  - Maintains transaction consistency through event sourcing
 
 ### Ledger Updates
 - Event store ingests events such as: `order_placed`, `liquidity_failed`, `liquidity_confirmed`, `liquidity_confirmation_failed`, `order_confirmed`
