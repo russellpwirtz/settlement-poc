@@ -85,7 +85,7 @@ curl -X POST "http://localhost:8000/orders" \
            "side": "buy",
            "order_type": "limit",
            "price": 33.33,
-           "quantity": 0.03
+           "quantity": 1.0
          }'
 ```
 
