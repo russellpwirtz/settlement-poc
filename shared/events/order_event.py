@@ -10,7 +10,8 @@ OrderEventType = Literal[
     "order_canceled",
     "order_partially_filled",
     "order_fully_filled",
-    "order_expired"
+    "order_expired",
+    "order_confirmed"
 ]
 
 OrderSide = Literal["buy", "sell"]
@@ -19,7 +20,7 @@ OrderStatus = Literal["open", "partial", "filled", "canceled", "expired"]
 class OrderEvent(BaseModel):
     event_id: str = str(uuid4())
     event_type: OrderEventType
-    order_id: str
+    transaction_id: str
     user_id: str
     symbol: str
     side: OrderSide
@@ -34,8 +35,8 @@ class OrderEvent(BaseModel):
     execution_price: Optional[Decimal] = None
     fee_currency: Optional[str] = None
     fee_amount: Optional[Decimal] = None
-    matching_order_id: Optional[str] = None
-    exchange_order_id: Optional[str] = None
+    matching_transaction_id: Optional[str] = None
+    exchange_transaction_id: Optional[str] = None
 
     class Config:
         json_encoders = {
@@ -45,7 +46,7 @@ class OrderEvent(BaseModel):
 
     def to_trade_dict(self) -> dict:
         return {
-            "order_id": self.order_id,
+            "transaction_id": self.transaction_id,
             "executed_at": self.timestamp,
             "quantity": self.filled_quantity,
             "price": self.execution_price,
@@ -56,7 +57,7 @@ class OrderEvent(BaseModel):
     def create_from_command(cls, command: 'PlaceOrderCommand'):
         return cls(
             event_type="order_placed",
-            order_id=command.order_id,
+            transaction_id=command.transaction_id,
             user_id=command.user_id,
             symbol=command.symbol,
             side=command.side,

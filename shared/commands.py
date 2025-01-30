@@ -18,16 +18,16 @@ class PlaceOrderCommand(BaseCommand):
     price: Optional[float]  # Required for limit orders
     quantity: float
     order_type: OrderType
-    order_id: str = str(uuid.uuid4())
+    transaction_id: str = str(uuid.uuid4())
 
 class OrderConfirmationCommand(BaseCommand):
     command_type: Literal["order_confirmation"] = "order_confirmation"
-    order_id: str
+    transaction_id: str
     confirmation_id: str = str(uuid.uuid4())
 
 class CancelOrderCommand(BaseCommand):
     command_type: Literal["cancel_order"] = "cancel_order"
-    order_id: str
+    transaction_id: str
     symbol: str
 
 class DepositFundsCommand(BaseCommand):

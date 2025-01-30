@@ -3,11 +3,16 @@ from shared.streaming import consume_messages
 from shared.commands import PlaceOrderCommand, OrderConfirmationCommand
 from shared.event_store import PostgresEventStore
 from shared.events.order_event import OrderEvent
-import asyncio
+from shared.events.wallet_event import WalletEvent
 import asyncpg
 import logging
 import os
 from shared import load_env
+import asyncio
+import json
+from datetime import datetime
+import uuid
+from fastapi.encoders import jsonable_encoder
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +26,6 @@ class LiquidityEngine:
             group_id="liquidity-engine-group"
         )
         self.event_store = None
-        self.pending_swaps = {} 
         logger.info("LiquidityEngine initialized")
 
     async def start(self):
@@ -30,18 +34,23 @@ class LiquidityEngine:
             logger.info("LiquidityEngine started")
             async for msg in consume_messages(self.consumer):
                 try:
-                    if msg["command_type"] == "place_order":
-                        command = PlaceOrderCommand.parse_obj(msg)
+                    # Parse the message from JSON
+                    msg_dict = json.loads(msg)
+                    
+                    if msg_dict["command_type"] == "place_order":
+                        command = PlaceOrderCommand.parse_obj(msg_dict)
                         logger.info(f"Received {command.command_type} command for {command.symbol}")
                         await self.process_command(command)
-                    elif msg["command_type"] == "order_confirmation":
-                        command = OrderConfirmationCommand.parse_obj(msg)
-                        logger.info(f"Received {command.command_type} command for {command.order_id}")
+                    elif msg_dict["command_type"] == "order_confirmation":
+                        command = OrderConfirmationCommand.parse_obj(msg_dict)
+                        logger.info(f"Received {command.command_type} command for {command.transaction_id}")
                         await self.handle_order_confirmation(command)
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")
         except Exception as e:
             logger.error(f"Error starting LiquidityEngine: {e}")
+        finally:
+            await self.consumer.stop()
 
     async def process_command(self, command: PlaceOrderCommand):
         # Handle order placement by initiating liquidity request
@@ -50,72 +59,94 @@ class LiquidityEngine:
     async def request_liquidity(self, command: PlaceOrderCommand):
         """Request liquidity from merchant"""
         try:
+            # Create and save liquidity requested event using OrderEvent
+            liquidity_event = OrderEvent(
+                event_type="order_placed",
+                transaction_id=command.transaction_id,
+                user_id=command.user_id,
+                symbol=command.symbol,
+                quantity=command.quantity,
+                price=command.price,
+                side=command.side,
+                remaining_quantity=command.quantity,
+                status="open"
+            )
+            await self.event_store.save_event(command.transaction_id, jsonable_encoder(liquidity_event))
+            
             # Send tokens to exchange (blockchain operation)
             await self.send_tokens_to_exchange(command)
+            
             # Initiate API call to merchant
             await self.initiate_merchant_swap(command)
-            # Add command to pending swaps
-            logger.info(f"Liquidity requested for order {command.order_id}. Waiting for confirmation.")
-            self.pending_swaps[command.order_id] = {
-                'command': command,
-                'status': 'pending'
-            }
-        
+            
+            logger.info(f"Liquidity requested for transaction {command.transaction_id}. Waiting for confirmation.")
+            
         except Exception as e:
             logger.error(f"Error requesting liquidity: {e}")
+            # Save failed event
+            await self.event_store.save_event(command.transaction_id, {
+                "event_id": str(uuid.uuid4()),
+                "event_type": "liquidity_failed",
+                "transaction_id": command.transaction_id,
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat()
+            })
 
     async def handle_order_confirmation(self, command: OrderConfirmationCommand):
-        """Handle order confirmation from API"""
         try:
-            if command.order_id not in self.pending_swaps:
-                raise ValueError(f"No pending swap found for order {command.order_id}")
-                
-            swap = self.pending_swaps[command.order_id]
-            original_command = swap['command']
+            # Get the pending request from event store
+            events = await self.event_store.list_events_by_transaction_id(command.transaction_id)
+            if not events:
+                logger.error(f"No events found for transaction {command.transaction_id}")
+                return
             
-            # Step 3: Merchant sends tokens back to exchange
-            await self.receive_tokens_from_merchant(original_command)
+            pending_request = next((e for e in events if e['event_type'] == 'order_placed'), None)
+            if not pending_request:
+                logger.error(f"No pending order found for transaction {command.transaction_id}")
+                return
             
-            # Step 4: Confirm the liquidity provision
-            await self.confirm_liquidity(original_command)
+            logger.info(f"Pending request: {pending_request}")
             
-            # Step 5: Send order confirmation
-            await self.send_order_confirmation(original_command)
+            # Create confirmation event with proper event_id
+            confirmation_event = {
+                "event_id": str(uuid.uuid4()),  # Generate new event_id
+                "event_type": "liquidity_confirmed",
+                "transaction_id": command.transaction_id,
+                "confirmation_id": command.confirmation_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
             
-            # Clean up pending swap
-            del self.pending_swaps[command.order_id]
+            await self.event_store.save_event(command.transaction_id, confirmation_event)
+            
+            logger.info(f"Transaction {command.transaction_id} successfully confirmed with confirmation ID {command.confirmation_id}")
             
         except Exception as e:
             logger.error(f"Error handling order confirmation: {e}")
+            # Save failed event with proper event_id
+            failed_event = {
+                "event_id": str(uuid.uuid4()),  # Generate new event_id
+                "event_type": "liquidity_confirmation_failed",
+                "transaction_id": command.transaction_id,
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            await self.event_store.save_event(command.transaction_id, failed_event)
             raise
 
     async def send_order_confirmation(self, command: PlaceOrderCommand):
-        """Send order confirmation after successful liquidity swap"""
-        confirmation_event = OrderEvent(
-            event_type="order_confirmed",
-            order_id=command.order_id,
-            symbol=command.symbol,
-            side=command.side,
-            quantity=command.quantity,
-            price=command.price
-        )
-        
-        await self.event_store.save_event(command.user_id, confirmation_event.dict())
-        logger.info(f"Order {command.order_id} confirmed")
+        """No longer needed as we handle this in handle_order_confirmation"""
+        pass
 
     async def send_tokens_to_exchange(self, command: PlaceOrderCommand):
         """Send tokens to exchange (blockchain operation)"""
-        # TODO: Implement blockchain token transfer
-        # This would involve interacting with the blockchain
-        # For now, just log the transaction
-        logger.info(f"Sending {command.amount} {command.currency} tokens to exchange")
+        # Calculate the total amount based on quantity and price
+        total_amount = float(command.quantity) * float(command.price)
+        logger.info(f"Sending {total_amount} {command.symbol.split('/')[1]} tokens to exchange")
         
     async def initiate_merchant_swap(self, command: PlaceOrderCommand):
         """Initiate API call to merchant"""
-        # TODO: Implement API call to merchant
-        # This would involve sending the command to the merchant API
-        # For now, just log the transaction
-        logger.info(f"Initiating merchant swap for order {command.order_id}")
+        total_amount = float(command.quantity) * float(command.price)
+        logger.info(f"Initiating merchant swap for transaction {command.transaction_id} with {command.quantity} {command.symbol.split('/')[0]} at {command.price} {command.symbol.split('/')[1]} each (total: {total_amount})")
         
     async def receive_tokens_from_merchant(self, command: PlaceOrderCommand):
         """Receive tokens from merchant (blockchain operation)"""
@@ -126,11 +157,12 @@ class LiquidityEngine:
         
     async def confirm_liquidity(self, command: PlaceOrderCommand):
         """Confirm liquidity provision"""
+        total_amount = float(command.quantity) * float(command.price)
         confirmation_event = WalletEvent(
             event_type="liquidity_confirmed",
             user_id=command.user_id,
-            currency=command.currency,
-            amount=command.amount,
+            currency=command.symbol.split('/')[1],  # Use the quote currency
+            amount=total_amount,
             transaction_id=command.transaction_id
         )
         
@@ -142,3 +174,19 @@ class LiquidityEngine:
 
     async def stop(self):
         await self.consumer.stop() 
+
+async def main():
+    engine = LiquidityEngine()
+    try:
+        await engine._init_event_store()
+        await engine.start()
+    except Exception as e:
+        logger.error(f"Engine failed: {e}")
+    finally:
+        await engine.stop()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Shutting down liquidity engine...") 

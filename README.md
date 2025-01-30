@@ -53,7 +53,7 @@ curl -X POST "http://localhost:8000/wallet/deposit" \
      -H "Content-Type: application/json" \
      -d '{
            "user_id": "user123",
-           "currency": "BTC",
+           "currency": "ETH",
            "amount": 1.5,
            "transaction_id": "769f1e96-da1b-4baa-94df-8495b613e772"
          }'
@@ -69,26 +69,32 @@ curl -X POST "http://localhost:8000/wallet/deposit/confirm" \
          }'
 ```
 
-## Data Flow Example: Placing an Order
-
-### User Authentication
-- Client sends `POST /order` with JWT token
-- API Gateway validates token via Cognito
-
-### Order Placement
+### Place Order
+Place a BUY order for 0.03 BTC at a price of 33.33 ETH per BTC:
 ```bash
-POST /order HTTP/1.1
-Content-Type: application/json
-Authorization: Bearer <JWT_TOKEN>
+curl -X POST "http://localhost:8000/orders" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "user_id": "user123",
+           "symbol": "BTC/ETH",
+           "side": "buy",
+           "order_type": "limit",
+           "price": 33.33,
+           "quantity": 0.03
+         }'
+```
 
-{
-    "user_id": "user123",
-    "symbol": "BTC/USD",
-    "side": "BUY",
-    "type": "LIMIT",
-    "price": 45000,
-    "quantity": 0.5
-}
+
+### Confirm Order
+Confirm a BUY order for 0.03 BTC at a price of 33.33 ETH per BTC:
+```bash
+curl -X POST "http://localhost:8000/orders/confirm" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "user_id": "user123",
+           "transaction_id": "order123",
+           "confirmation_id": "confirmation123"
+         }'
 ```
 
 ### Liquidity Matching 
